@@ -222,7 +222,10 @@ function integrateDimension(current, dimension, obs, answers, stage2) {
   const afterEvent = clamp(current + effective);
   const speed = recoverySpeed(dimension, afterEvent, baseline, answers);
   const final = clamp(baseline + (afterEvent - baseline) * Math.exp(-Math.log(2) / halfLife * speed));
-  const accepted = obs.source === 'reply_behavior' ? true : acceptedMetadata(stage2, dimension);
+  // A rise in aversion whose own source Jev labels as playful ("这次我不上钩",
+  // teasing, being firm to look after her) is banter, not wanting to pull away.
+  const playfulAversion = dimension === 'aversion' && gap > 0 && probabilityOf(stage2[`${dimension}_label`], 'playful') >= 0.5;
+  const accepted = obs.source === 'reply_behavior' ? true : (!playfulAversion && acceptedMetadata(stage2, dimension));
   return { observation: obs.value, gap, raw, effective, before: current, afterEvent, final, baseline, source: obs.source, ...(obs.ending ? { ending: obs.ending } : {}), accepted };
 }
 

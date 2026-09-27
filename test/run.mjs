@@ -186,4 +186,16 @@ await test('injection audit records which one-shot hint was actually delivered',
   resetEmotionConfig();
 });
 
+
+await test('banter and topic preference are not aversion', () => {
+  const row = EMOTION_DIMENSIONS.find(([key]) => key === 'aversion');
+  assert.match(row[7], /不上钩/);
+  const answers = baseAnswers({ texture: choice('amused'), level_aversion: { probabilities: { light: .6, clear: .3, faint: .1 } } });
+  const meta = label => ({ aversion_target: choice('her'), aversion_novelty: choice('new_event'), aversion_relation: choice('supports'), aversion_evidence: choice('t1'), aversion_label: choice(label) });
+  const playful = turnInput(createEmotionState('av1'), 'a1', answers, meta('playful'));
+  assert.equal(playful.details.changes.aversion.accepted, false);
+  const rejected = turnInput(createEmotionState('av2'), 'a2', answers, meta('rejected'));
+  assert.equal(rejected.details.changes.aversion.accepted, true);
+});
+
 console.log(`\n${passed} passed`);
