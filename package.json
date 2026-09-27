@@ -1,0 +1,15 @@
+{
+  "name": "emotion-system",
+  "version": "1.0.0",
+  "description": "以 Jev 为核心的 AI 伴侣情绪系统：从角色自己写下的思考里读出情绪。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "example": "node examples/basic-turn.mjs"
+  },
+  "license": "MIT",
+  "author": "bvsden"
+}
