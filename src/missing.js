@@ -8,6 +8,7 @@ export const MISSING_GRACE_MS = 15 * 60 * 1000;
 export const MISSING_TICK_MS = 5 * 60 * 1000;
 export const MISSING_BASE_THRESHOLD = 0.65;
 export const MISSING_MORNING_BONUS = 0.25;
+export const MISSING_SLEEP_ANCHOR_MIN_MS = 3 * 60 * 60 * 1000;
 export const MISSING_WAKE_MERGE_MS = 45 * 60 * 1000;
 export const MISSING_WAKE_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -131,7 +132,21 @@ export function tickMissingClock(previous, {
     clock.lastTickAt = end;
     return { clock, changed: end !== Number(previous?.lastTickAt || 0), activeMs: 0, multiplier: missingMultiplier({ values, baselines, neglectTrace: clock.neglectTrace, jealousyTrace }) };
   }
-  const start = Math.max(Number(clock.lastTickAt || clock.awaitingSince), Number(clock.graceUntil || 0));
+  let start = Math.max(Number(clock.lastTickAt || clock.awaitingSince), Number(clock.graceUntil || 0));
+  // Returning before the morning anchor deliberately suppresses that day's
+  // fixed +0.25. If a new pre-07:00 wait starts afterwards, however, it must
+  // still leave overnight freeze at 07:00 and resume ordinary wall-clock
+  // growth. Because frozen ticks may already have advanced lastTickAt beyond
+  // 07:00, resume from the boundary itself exactly once.
+  const boundary = anchorBoundaryAt(end, tzOffsetMin);
+  const skippedMorningBonus = clock.overnightFreeze
+    && Number(clock.awaitingSince) < boundary
+    && end >= boundary
+    && !missingMorningAnchorEligible(clock, { now: end, tzOffsetMin });
+  if (skippedMorningBonus) {
+    clock.overnightFreeze = false;
+    start = Math.max(Number(clock.graceUntil || 0), boundary);
+  }
   const activeMs = missingActiveDuration(start, end, tzOffsetMin, clock.overnightFreeze);
   const multiplier = missingMultiplier({ values, baselines, neglectTrace: clock.neglectTrace, jealousyTrace });
   const before = clock.value;
@@ -140,7 +155,7 @@ export function tickMissingClock(previous, {
     clock.value = round(1 - (1 - clock.value) * Math.exp(-kPerHour * multiplier.mult * (activeMs / HOUR_MS)));
   }
   clock.lastTickAt = end;
-  return { clock, changed: clock.value !== before || end !== Number(previous?.lastTickAt || 0), activeMs, multiplier };
+  return { clock, changed: skippedMorningBonus || clock.value !== before || end !== Number(previous?.lastTickAt || 0), activeMs, multiplier };
 }
 
 export function startMissingClock(previous, { deliveredAt = Date.now(), messageId = '', tzOffsetMin = 0 } = {}) {
@@ -165,10 +180,10 @@ function anchorBoundaryAt(timestamp, tzOffsetMin) {
 export function missingMorningAnchorEligible(previous, { now = Date.now(), tzOffsetMin = 0 } = {}) {
   const clock = normalizeMissingClock(previous);
   if (!clock.awaitingSince) return false;
-  const day = missingLocalDay(now, tzOffsetMin);
-  if (clock.morningAnchorDay === day) return false;
   if (missingLocalMinute(now, tzOffsetMin) < 7 * 60) return false;
-  return Number(clock.awaitingSince) < anchorBoundaryAt(now, tzOffsetMin);
+  const boundary = anchorBoundaryAt(now, tzOffsetMin);
+  return Number(clock.awaitingSince) < boundary
+    && Number(now) - Number(clock.awaitingSince) >= MISSING_SLEEP_ANCHOR_MIN_MS;
 }
 
 export function nextMissingThresholdAbove(value) {

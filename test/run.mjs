@@ -5,6 +5,8 @@ import {
   applyEmotionTurn, buildBodyQuestions, buildEmotionMaterial, buildLongingReturnEvent, buildStage1Questions,
   buildStage2Questions, checkEmotionHealth, configureEmotionSystem, createEmotionState, planEmotionFollowups,
   readBracketTouch, renderEmotionPrompt, replayEmotionRecords, resetEmotionConfig, scoreTurn,
+  applyMissingMorningAnchor, buildEmotionSnapshot, createMissingClock, emotionInjectionAuditView,
+  missingMorningAnchorEligible, recordMissingReturn, startMissingClock, tickMissingClock,
 } from '../src/index.js';
 
 let passed = 0;
@@ -128,6 +130,60 @@ await test('pipeline end to end with a stand-in for Jev; replay is deterministic
   assert.ok(!JSON.stringify(r.record).includes('有点累'), 'records carry no chat text');
   const again = replayEmotionRecords('p', [r.record]);
   assert.deepEqual(again.state.values, r.state.values);
+});
+
+const at = iso => Date.parse(`${iso}:00Z`);
+const MINUTE = 60_000;
+const s0 = createEmotionState('clock');
+const clockArgs = { tzOffsetMin: 0, values: s0.values, baselines: s0.baselines };
+
+await test('morning anchor: a night of sleep earns the fixed +0.25 once', () => {
+  let c = startMissingClock(createMissingClock(), { deliveredAt: at('2026-01-01T22:00'), tzOffsetMin: 0 }).clock;
+  c = tickMissingClock(c, { ...clockArgs, now: at('2026-01-02T07:05') }).clock;
+  assert.equal(c.value, 0, 'a wait starting after 21:00 is frozen overnight');
+  const anchored = applyMissingMorningAnchor(c, { now: at('2026-01-02T07:05'), tzOffsetMin: 0 });
+  assert.equal(anchored.applied, true);
+  assert.equal(anchored.clock.value, .25);
+  assert.equal(applyMissingMorningAnchor(anchored.clock, { now: at('2026-01-02T08:00'), tzOffsetMin: 0 }).applied, false);
+});
+
+await test('morning anchor: going to sleep after midnight still counts', () => {
+  const c = startMissingClock(createMissingClock(), { deliveredAt: at('2026-01-02T01:30'), tzOffsetMin: 0 }).clock;
+  c.morningAnchorDay = '2026-01-02';
+  assert.equal(missingMorningAnchorEligible(c, { now: at('2026-01-02T07:00'), tzOffsetMin: 0 }), true);
+  assert.equal(applyMissingMorningAnchor(c, { now: at('2026-01-02T07:00'), tzOffsetMin: 0 }).clock.value, .25);
+  const short = startMissingClock(createMissingClock(), { deliveredAt: at('2026-01-02T05:30'), tzOffsetMin: 0 }).clock;
+  assert.equal(missingMorningAnchorEligible(short, { now: at('2026-01-02T07:30'), tzOffsetMin: 0 }), false, 'under three hours is not a night of sleep');
+});
+
+await test('a skipped anchor still unfreezes at 07:00 instead of locking the day at zero', () => {
+  let c = startMissingClock(createMissingClock(), { deliveredAt: at('2026-01-01T22:00'), tzOffsetMin: 0 }).clock;
+  c = recordMissingReturn(c, { now: at('2026-01-02T06:50'), eventId: 'early', tzOffsetMin: 0 }).clock;
+  c = startMissingClock(c, { deliveredAt: at('2026-01-02T06:55'), tzOffsetMin: 0 }).clock;
+  assert.equal(applyMissingMorningAnchor(c, { now: at('2026-01-02T08:00'), tzOffsetMin: 0 }).applied, false);
+  const resumed = tickMissingClock(c, { ...clockArgs, now: at('2026-01-02T08:00') });
+  assert.equal(resumed.clock.overnightFreeze, false);
+  assert.equal(resumed.activeMs, 50 * MINUTE);
+  assert.ok(resumed.clock.value > 0 && resumed.clock.value < .25);
+});
+
+await test('injection audit records which one-shot hint was actually delivered', () => {
+  const s = createEmotionState('audit');
+  s.stateVersion = 3;
+  s.computedThrough = { messageId: 'a3', messageTs: 300, stateVersion: 3 };
+  s.hintState.pending.avoidance = { id: 'avoidance:a3:3', stateVersion: 3 };
+  const out = buildEmotionSnapshot(s, { requestId: 'r1', previousAssistantMessageId: 'a3', includeUpdate: false, deliveredAt: 1234, currentUserMessageId: 'u4' });
+  assert.match(out.text, /<AFFECT_NOTE>系统提醒：/);
+  assert.match(out.text, /她刚发来的消息/);
+  assert.deepEqual(emotionInjectionAuditView(out.state), [{
+    requestId: 'r1', deliveredAt: 1234, computedThroughTurnId: 'a3', targetUserMessageId: 'u4', affordanceKinds: [], noteKinds: ['avoidance'],
+  }]);
+  configureEmotionSystem({ user: '小雨' });
+  const s2 = createEmotionState('audit2');
+  s2.stateVersion = 1; s2.computedThrough = { messageId: 'b1', messageTs: 1, stateVersion: 1 };
+  s2.hintState.pending.avoidance = { id: 'x', stateVersion: 1 };
+  assert.match(buildEmotionSnapshot(s2, { requestId: 'r2', previousAssistantMessageId: 'b1', includeUpdate: false }).text, /小雨刚发来的消息/);
+  resetEmotionConfig();
 });
 
 console.log(`\n${passed} passed`);

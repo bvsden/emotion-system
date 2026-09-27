@@ -85,7 +85,7 @@ Jev 是 TypeSafe AI 在 2026 年 9 月发布的**决策模型**，可以通过 O
 - 角色要开启**可见思考**，并在思考里用第一人称写下感受
 
 ```bash
-npm test               # 12 项测试，全部用虚构的例子
+npm test               # 16 项测试，全部用虚构的例子
 npm run example        # 离线示例（用模拟答案）
 OPENROUTER_API_KEY=sk-... npm run example   # 真实调用 Jev
 ```
@@ -149,7 +149,7 @@ state = next;
 - **注入给角色（可选）**：在生成下一条回复前调用 `buildEmotionSnapshot(state, { requestId, previousAssistantMessageId, includeUpdate })`，把返回的 `text` 放进**紧贴最新用户消息的动态上下文**，不要放进稳定的 system prompt。
   - `includeUpdate: false` 表示关闭情绪差值注入，只保留提醒与提示（推荐，见“关于情绪回声”）。
   - 另外在稳定 system prompt 里写一次说明，例如：“`<AFFECT_SNAPSHOT>` 是截至上一条回复结束时的内在状态与提示，不是对之后消息的分析；其中只列可用选项和提醒，用不用由你决定，它们不是指令。”
-- **等待思念（可选）**：`src/missing.js` 提供按真实时间增长的思念时钟。角色发出消息、而你还没回的时候调用 `startMissingClock`，之后定时调用 `tickMissingClock`，你回来时调用 `recordMissingReturn`。夜间冻结的时段按你的时区设置。
+- **等待思念（可选）**：`src/missing.js` 提供按真实时间增长的思念时钟。角色发出消息、而你还没回的时候调用 `startMissingClock`，之后定时调用 `tickMissingClock`，每天 07:00 后调用一次 `applyMissingMorningAnchor`（睡了一觉会加一次固定量），你回来时调用 `recordMissingReturn`。夜间冻结的时段按你的时区设置。
 - **体检（可选）**：定期用最近的记录、各对话状态调用 `checkEmotionHealth()`，它会列出停止标记卡住、接触没计入、分析失败等异常。
 
 ### 5. 建议先旁观几天

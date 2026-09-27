@@ -16,6 +16,7 @@ import {
   normalizeMissingClock,
 } from './missing.js';
 import { renderEmotionPrompt } from './prompts.js';
+import { fillPersona } from './config.js';
 
 // Semantic "headline" keys for a turn. How you name or display them (titles,
 // colours, emoji…) is up to you; the engine only returns the key.
@@ -601,6 +602,33 @@ function xmlAttribute(value) {
   return String(value || '').replace(/[&"<>]/g, char => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[char]);
 }
 
+// A narrow, text-free audit projection (e.g. for a mood page). The full snapshot
+// text stays private to the generation request; the UI only learns which
+// one-shot affordance/note was actually injected, when, and which settled
+// assistant turn caused it.
+export function emotionInjectionAuditView(state) {
+  return Object.entries(state?.panelDelivery || {}).flatMap(([requestId, raw]) => {
+    const row = raw && typeof raw === 'object' ? raw : {};
+    const deliveredAt = Math.max(0, Number(row.deliveredAt || 0));
+    const computedThroughTurnId = String(row.computedThroughTurnId || '');
+    const affordanceKinds = Array.isArray(row.affordanceKinds)
+      ? row.affordanceKinds.filter(kind => ['care', 'arousal'].includes(kind))
+      : [];
+    const noteKinds = Array.isArray(row.noteKinds)
+      ? row.noteKinds.filter(kind => kind === 'avoidance')
+      : [];
+    if (!deliveredAt || !computedThroughTurnId || (!affordanceKinds.length && !noteKinds.length)) return [];
+    return [{
+      requestId: String(requestId || ''),
+      deliveredAt,
+      computedThroughTurnId,
+      targetUserMessageId: String(row.targetUserMessageId || ''),
+      affordanceKinds: [...new Set(affordanceKinds)],
+      noteKinds: [...new Set(noteKinds)],
+    }];
+  }).sort((a, b) => a.deliveredAt - b.deliveredAt);
+}
+
 export function inheritEmotionState(source, conversationId, handoff = {}) {
   const migrated = migrateEmotionState(source, source?.conversationId || '');
   const inherited = structuredClone(migrated);
@@ -655,19 +683,27 @@ export function buildEmotionSnapshot(previous, options = {}) {
 
   const pending = state.hintState?.pending || {};
   const affordances = [];
+  const affordanceKinds = [];
   const consumed = [];
   if (pending.care) {
     const tools = Array.isArray(options.careTools) ? options.careTools.filter(Boolean).slice(0, 4) : [];
-    if (tools.length) affordances.push(renderEmotionPrompt('care', { options: tools }, options.promptConfig));
+    if (tools.length) {
+      affordances.push(renderEmotionPrompt('care', { options: tools }, options.promptConfig));
+      affordanceKinds.push('care');
+    }
     consumed.push(['care', pending.care]);
   }
   if (pending.arousal) {
-    if (!options.intimacyActive && !options.currentBoundaryBlocked) affordances.push(renderEmotionPrompt('arousal', {}, options.promptConfig));
+    if (!options.intimacyActive && !options.currentBoundaryBlocked) {
+      affordances.push(renderEmotionPrompt('arousal', {}, options.promptConfig));
+      affordanceKinds.push('arousal');
+    }
     consumed.push(['arousal', pending.arousal]);
   }
   const notes = pending.avoidance
     ? [renderEmotionPrompt('avoidance', {}, options.promptConfig)]
     : [];
+  const noteKinds = pending.avoidance ? ['avoidance'] : [];
   if (pending.avoidance) consumed.push(['avoidance', pending.avoidance]);
 
   for (const [kind, hint] of consumed) {
@@ -679,8 +715,8 @@ export function buildEmotionSnapshot(previous, options = {}) {
   if (hasContent && computed?.messageId) {
     const immediate = String(options.previousAssistantMessageId || '') === String(computed.messageId || '');
     const coverage = immediate
-      ? '以下状态与提示截至你的上一条回复结束；她刚发来的消息发生在其后，请结合当前消息判断是否仍然适用。'
-      : '以下状态与提示来自较早的已结算回复；最近几轮尚未结算，她刚发来的消息也发生在其后，请结合当前消息判断是否仍然适用。';
+      ? fillPersona('以下状态与提示截至你的上一条回复结束；{user}刚发来的消息发生在其后，请结合当前消息判断是否仍然适用。')
+      : fillPersona('以下状态与提示来自较早的已结算回复；最近几轮尚未结算，{user}刚发来的消息也发生在其后，请结合当前消息判断是否仍然适用。');
     const parts = [`<AFFECT_SNAPSHOT computed_through_turn_id="${xmlAttribute(computed.messageId)}">`, coverage];
     if (updateLines.length) parts.push('<AFFECT_UPDATE>', ...updateLines, '</AFFECT_UPDATE>');
     for (const line of affordances) parts.push(`<AFFECT_AFFORDANCE>${line}</AFFECT_AFFORDANCE>`);
@@ -694,8 +730,13 @@ export function buildEmotionSnapshot(previous, options = {}) {
     stateVersion: Number(state.stateVersion || 0),
     computedThroughTurnId: String(computed?.messageId || ''),
     includedUpdate: updateLines.length > 0 || Boolean(returnEvent),
+    updateCount: updateLines.length,
     affordanceCount: affordances.length,
     noteCount: notes.length,
+    affordanceKinds,
+    noteKinds,
+    deliveredAt: Math.max(0, Number(options.deliveredAt || Date.now())),
+    targetUserMessageId: String(options.currentUserMessageId || ''),
   };
   if (requestId) {
     state.panelDelivery = { ...(state.panelDelivery || {}), [requestId]: snapshot };
