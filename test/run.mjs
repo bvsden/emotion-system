@@ -21,7 +21,7 @@ await test('persona placeholders are filled; names work', () => {
   const q = buildStage1Questions();
   const text = JSON.stringify(q);
   assert.ok(!text.includes('{char}') && !text.includes('{user}'));
-  assert.equal(Object.keys(q).length, 31);
+  assert.equal(Object.keys(q).length, 30);
   assert.equal(EMOTION_GATES.length, 6);
   configureEmotionSystem({ character: '阿澈', user: '小雨', userName: '小雨' });
   assert.match(buildStage1Questions().level_anger.instructions, /阿澈（assistant）自己此刻的愤怒/);
@@ -196,6 +196,46 @@ await test('banter and topic preference are not aversion', () => {
   assert.equal(playful.details.changes.aversion.accepted, false);
   const rejected = turnInput(createEmotionState('av2'), 'a2', answers, meta('rejected'));
   assert.equal(rejected.details.changes.aversion.accepted, true);
+});
+
+await test('energy is gone; reply-self follow-ups carry the definition', () => {
+  resetEmotionConfig();
+  assert.ok(!EMOTION_DIMENSIONS.some(([key]) => key === 'energy'));
+  assert.ok(!('energy' in createEmotionState('e').values));
+  const q = buildStage2Questions({ dimensions: ['overwhelm'], replySelf: ['overwhelm'] }, { thinking: [{ id: 't1', text: '等一下。' }] }).replyself_level_overwhelm;
+  assert.match(q.instructions, /情绪或信息超出承载/);
+  assert.match(q.instructions, /语气激动/);
+  assert.deepEqual(Object.keys(q.criteria), ['none', 'faint', 'light', 'clear', 'strong']);
+  assert.equal(q.criteria.none, '没有说到');
+});
+
+await test('an intimate scene drives arousal; its anger settles afterwards', () => {
+  const scene = stageIndex => ({ touch: { value: 0.75 }, answers: {}, stage2: {}, intimacy: { stageIndex, stageCount: 4, climaxIndex: 3, startedAt: 500 } });
+  const withLevels = extra => { const a = baseAnswers({ body_any: noul(.95), reply_self_any: noul(.05), ...extra }); for (const [key] of EMOTION_DIMENSIONS) a[`level_${key}`] ??= { probabilities: { not_mentioned: .96, none: .04 } }; return a; };
+  assert.equal(planEmotionFollowups(createEmotionState('s'), withLevels(), { localIntimacy: scene(1).intimacy }).body, false);
+  let state = { ...createEmotionState('s'), arousal: { ...createEmotionState('s').arousal, value: 0.45 } };
+  let last = state.arousal.value;
+  for (const [i, stage] of [0, 1, 2, 3].entries()) {
+    const out = turnInput(state, `s${i}`, withLevels(), {}, { localSignals: scene(stage) });
+    assert.ok(out.state.arousal.value >= last);
+    last = out.state.arousal.value; state = out.state;
+  }
+  assert.ok(last > 0.8);
+  const meta = { anger_target: choice('her'), anger_novelty: choice('new_event'), anger_relation: choice('supports'), anger_evidence: choice('t1'), anger_label: choice('other') };
+  const hot = turnInput(createEmotionState('h'), 'h1', withLevels({ level_anger: { probabilities: { strong: .8, clear: .2 } } }), meta, { localSignals: scene(2) });
+  assert.ok(hot.state.values.anger > 0.3);
+  assert.equal(hot.state.latestInjection.items.find(item => item.key === 'anger').reason, '亲密中');
+  const after = turnInput(hot.state, 'h2', withLevels(), {});
+  assert.ok(after.state.values.anger < hot.state.values.anger * 0.45);
+});
+
+await test('teasing anger is not taken; aggrieved anger is', () => {
+  const levels = extra => { const a = baseAnswers({ reply_self_any: noul(.05), ...extra }); for (const [key] of EMOTION_DIMENSIONS) a[`level_${key}`] ??= { probabilities: { not_mentioned: .96, none: .04 } }; return a; };
+  const meta = playful => ({ anger_target: choice('her'), anger_novelty: choice('new_event'), anger_relation: choice('supports'), anger_evidence: choice('t1'), anger_label: { probabilities: { playful, rejected: 1 - playful }, confidence: .6 } });
+  const tease = turnInput(createEmotionState('t1'), 't1', levels({ level_anger: { probabilities: { light: .8, faint: .2 } }, texture: { probabilities: { playful_jealous: .4, amused: .2, tender_care: .4 }, confidence: .4 } }), meta(.38));
+  assert.equal(tease.details.changes.anger.accepted, false);
+  const hurt = turnInput(createEmotionState('t2'), 't2', levels({ level_anger: { probabilities: { clear: .8, light: .2 } }, texture: choice('aggrieved') }), meta(.46));
+  assert.equal(hurt.details.changes.anger.accepted, true);
 });
 
 console.log(`\n${passed} passed`);

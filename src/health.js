@@ -44,7 +44,8 @@ export function checkEmotionHealth({ records = [], states = [], cursor = {}, now
     let streak = 0, worst = 0, lastAt = 0;
     for (const r of list) {
       const local = Number(r.localSignals?.touch?.value || 0);
-      if (local <= 0) continue;
+      // Scene turns drive A from the scene, so touch is not an input there.
+      if (local <= 0 || r.engine?.arousal?.flow) continue;
       const counted = Number(r.engine?.arousal?.touch || 0) > 0;
       streak = counted ? 0 : streak + 1;
       if (streak > worst) { worst = streak; lastAt = Number(r.messageTs || 0); }
@@ -59,7 +60,7 @@ export function checkEmotionHealth({ records = [], states = [], cursor = {}, now
   // 3. Arousal jumping in one turn without a real temptation.
   const jumps = ok.filter(r => {
     const a = r.engine?.arousal;
-    return a && Number(a.final || 0) - Number(a.before || 0) >= 0.25 && !(Number(a.tempted || 0) > 0);
+    return a && !a.flow && Number(a.final || 0) - Number(a.before || 0) >= 0.25 && !(Number(a.tempted || 0) > 0);
   });
   if (jumps.length) {
     issues.push(issue('arousal-jump', jumps.length >= 3 ? 'warn' : 'info', '身体亲近感单轮暴涨',

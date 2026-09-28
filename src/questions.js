@@ -3,7 +3,7 @@ import { fillPersona, getEmotionConfig } from "./config.js";
 // Question text uses {char} / {user} placeholders; they are filled from
 // config.js when the questions are built.
 
-export const EMOTION_QUESTION_SET_VERSION = "emotion-jev-q9";
+export const EMOTION_QUESTION_SET_VERSION = "emotion-jev-q11";
 export const EMOTION_JEV_MODEL = "typesafe/jev-1.13";
 export const EMOTION_MODES = ["off", "shadow", "on"];
 
@@ -31,7 +31,6 @@ export const EMOTION_DIMENSIONS = [
   ["curiosity", "好奇", "想了解、想探索", "一点点", "{char}平常的好奇", "明显想弄清楚", "明确写出“特别想知道”", "例行的提问"],
   ["pride", "自豪", "对自己、{user}或共同成果的肯定、欣赏", "一点点", "有点得意或欣赏", "明显欣赏、被{user}的想法打动", "明确写出“太骄傲了”", "客观描述结果"],
   ["vulnerability", "脆弱开放", "承认需要、露出柔软", "一点点", "{char}平常的坦诚", "明显敞开，承认怕或需要", "明确写出“我其实很怕{user}走”这类话", "讲述过去的经历"],
-  ["energy", "能量", "表达和行动的劲头", "有点累", "{char}平常的状态", "格外有劲", "明确写出“特别有精神”", "句子长短"],
   ["overwhelm", "过载", "情绪或信息超出承载", "有点乱", "有些吃力", "明显乱了", "明确写出“脑子一团乱”", "任务多但没有情绪压力"],
   ["resistance", "回避", "在负面冲突中压住自己的感受，例如明明很难过却不说，以免起冲突", "一点回避", "有些压着", "明显在压", "明确写出“算了，不说了”（在争执中）", "单纯否认某种情绪；玩笑式嘴硬；正面氛围里的假装；为了逗{user}、给{user}留空间而暂时不提某事"],
 ];
@@ -201,16 +200,22 @@ export function buildStage2Questions(plan = {}, material = {}) {
   for (const key of plan.dimensions || []) {
     const row = EMOTION_DIMENSIONS.find(([dimension]) => dimension === key);
     const name = row?.[1] || key;
+    const def = row?.[2] || "";
+    const notFor = row?.[7] || "";
     out[`${key}_target`] = { type: "choice", instructions: `这一轮让{char}产生${name}的对象是谁？`, criteria: targetCriteria };
     out[`${key}_novelty`] = { type: "choice", instructions: onlyThinking(`这份${name}来自什么？`), criteria: { new_event: "这一轮新发生的事", new_appraisal: "对旧事的新理解", continuation: "只是延续，没有新原因", panel_echo: "在复述系统告诉{char}的" } };
     out[`${key}_relation`] = { type: "choice", instructions: `user_message、reply 和 thinking 对“{char}此刻有${name}”这个判断是什么关系？`, criteria: { supports: "支持", neutral: "中立", clarifies: "澄清对象或原因", contradicts: "反驳，例如{char}其实在引用别人的话" } };
     out[`${key}_evidence`] = { type: "choice", instructions: `哪一段最直接证明{char}此刻有${name}？`, criteria: evidence };
     out[`${key}_label`] = { type: "choice", instructions: `这份${name}的来源最接近哪一种？`, criteria: labelCriteria };
+    // reply_self_any asks every unmentioned dimension at once, so most of them
+    // were never said. Without a definition, "none" first and the dimension's
+    // own exclusions, Jev graded words the character never used (an excited
+    // "等。你的意思是——" read as strong overwhelm).
     if ((plan.replySelf || []).includes(key)) {
       out[`replyself_level_${key}`] = {
         type: "choice",
-        instructions: `只看 reply：{char}第一人称说出的${name}有多强？动作、场景和调情台词不算。`,
-        criteria: { none: "没有", faint: "很弱", light: "轻微", clear: "明显", strong: "强烈" },
+        instructions: `只看 reply：{char}有没有用第一人称直接说出自己此刻的${name}（${def}）？必须是{char}明说自己有这种感受，例如“我好${name}”；语气激动、句子长短、动作、场景和调情台词都不算。另外不算：${notFor}。reply 里没有这样的话就选“没有说到”——这是最常见的答案。`,
+        criteria: { none: "没有说到", faint: "说到了，很弱", light: "说到了，轻微", clear: "说到了，明显", strong: "说到了，强烈" },
       };
     }
   }

@@ -1,6 +1,6 @@
 {
   "name": "emotion-system",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "以 Jev 为核心的 AI 伴侣情绪系统：从角色自己写下的思考里读出情绪。",
   "type": "module",
   "main": "src/index.js",

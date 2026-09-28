@@ -26,11 +26,12 @@ export const EMOTION_HEADLINE_KEYS = Object.freeze([
 ]);
 const HEADLINE = new Set(EMOTION_HEADLINE_KEYS);
 
-export const EMOTION_ENGINE_VERSION = 'emotion-engine-1.0';
+export const EMOTION_ENGINE_VERSION = 'emotion-engine-1.1';
 export const LEGACY_EMOTION_ENGINE_VERSION = 'emotion-engine-0';
 // Records scored by these engines carry the same stage-1/stage-2 answers and
 // are replayed with the current rules; the raw Jev answers never change.
 export const REPLAYABLE_EMOTION_ENGINE_VERSIONS = Object.freeze([
+  'emotion-engine-1.0',
   EMOTION_ENGINE_VERSION,
 ]);
 export const EMOTION_FOLLOWUP_GAP = 0.05;
@@ -41,12 +42,26 @@ export const EMOTION_CONFIG = Object.freeze({
   trust: [0.78, 0.65, 0.06, 30], longing: [0.08, 0.85, 0.10, 16], hurt: [0, 1, 0.14, 24],
   guilt: [0, 0.9, 0.14, 12],
   curiosity: [0.45, 0.9, 0.12, 6], pride: [0.15, 0.85, 0.10, 12], vulnerability: [0.45, 0.8, 0.10, 12],
-  energy: [0.72, 0.75, 0.08, 10], overwhelm: [0, 0.9, 0.12, 6], resistance: [0.03, 0.75, 0.10, 12],
+  overwhelm: [0, 0.9, 0.12, 6], resistance: [0.03, 0.75, 0.10, 12],
 });
+// Energy was removed in 1.1: in real use it mostly echoed sexual excitement
+// (already covered by arousal) or misread reply self-reports. Its baseline
+// stays in the arousal field term so A is unchanged; it had only ever moved
+// between 0.72 and 0.82.
+const ENERGY_BASELINE = 0.72;
 
-const A_CLASS = new Set(['joy', 'warmth', 'trust', 'longing', 'curiosity', 'vulnerability', 'energy']);
+const A_CLASS = new Set(['joy', 'warmth', 'trust', 'longing', 'curiosity', 'vulnerability']);
 const NEGATIVE = new Set(['sadness', 'anger', 'anxiety', 'aversion', 'hurt', 'guilt', 'overwhelm', 'resistance']);
 const SUPPRESSIBLE = new Set(['hurt', 'anger', 'sadness', 'anxiety']);
+// During an intimate scene (see `localSignals.intimacy`) "发狂""疯了" are real anger/overwhelm,
+// but they belong to the desire. They still rise, are marked 亲密中 for the
+// character,
+// do not count as a negative mood for the avoidance note, and 70% of what the
+// flow added settles on the first ordinary turn afterwards.
+const FLOW_HEAT_DIMENSIONS = new Set(['anger', 'overwhelm']);
+const FLOW_HEAT_SETTLE = 0.7;
+// Banter textures; the anger gate below needs one of these to dominate.
+const PLAYFUL_TEXTURES = ['amused', 'playful_jealous', 'defeated_fond'];
 const B_LEVELS = { none: 0, faint: 0.10, light: 0.25, clear: 0.50, strong: 0.80 };
 const LEVELS = ['none', 'faint', 'light', 'clear', 'strong'];
 
@@ -62,7 +77,7 @@ export function createEmotionState(conversationId = '') {
   return {
     version: 2, engineVersion: EMOTION_ENGINE_VERSION, conversationId: String(conversationId),
     stateVersion: 0, values, baselines, arousal: { value: 0, trace: 0, tick: 0, stopActive: false, stopSetAt: 0, contactExposure: 0 },
-    careUrgency: 0, neglectTrace: 0, jealousyTrace: 0, missing: createMissingClock(), processed: {}, updatedAt: 0,
+    careUrgency: 0, neglectTrace: 0, jealousyTrace: 0, flowHeat: {}, missing: createMissingClock(), processed: {}, updatedAt: 0,
     computedThrough: null,
     latestInjection: null,
     hintState: {
@@ -88,6 +103,7 @@ export function migrateEmotionState(previous, conversationId = previous?.convers
     stateVersion: Number(previous.stateVersion || 0),
     arousal: { ...fresh.arousal, ...(previous.arousal || {}) },
     careUrgency: clamp(previous.careUrgency), neglectTrace: clamp(previous.neglectTrace), jealousyTrace: clamp(previous.jealousyTrace),
+    flowHeat: Object.fromEntries(Object.entries(previous.flowHeat || {}).filter(([key, value]) => FLOW_HEAT_DIMENSIONS.has(key) && Number(value) > 0).map(([key, value]) => [key, clamp(value)])),
     missing: normalizeMissingClock(previous.missing),
     processed: previous.processed && typeof previous.processed === 'object' ? previous.processed : {},
     updatedAt: Number(previous.updatedAt || 0),
@@ -128,7 +144,7 @@ function expectedObservation(answer, dimension, { downgrade = false, questionSet
   return { status: 'value', value: clamp(value), mentioned: downgrade ? 1 : clamp(decoded.mentioned ?? 1), mode: decoded.mode || decoded.level, source: downgrade ? 'reply_self' : 'thinking' };
 }
 
-export function planEmotionFollowups(state, answers = {}, { questionSet = EMOTION_QUESTION_SET_VERSION, turnKind = '', localTouch = null } = {}) {
+export function planEmotionFollowups(state, answers = {}, { questionSet = EMOTION_QUESTION_SET_VERSION, turnKind = '', localTouch = null, localIntimacy = null } = {}) {
   // Proactive/wake turns only feed neglect evidence and never apply arousal,
   // so their body block was paid for and discarded.
   const evidenceOnly = NEGLECT_EVIDENCE_ONLY_TURN_KINDS.has(turnKind);
@@ -150,7 +166,9 @@ export function planEmotionFollowups(state, answers = {}, { questionSet = EMOTIO
   const neglect = Boolean(answers.neglect_level && (decodeLevel(answers.neglect_level, { questionSet }).status === 'value' || decodeNoul(answers.understanding).status === 'yes'));
   // contact read locally from 【】 actions also needs the body block
   // (receptivity, initiator, stop), even when A is low.
-  const body = !evidenceOnly && (decodeNoul(answers.body_any).status === 'yes' || Number(state.arousal?.value || 0) > 0.05 || Number(localTouch || 0) > 0);
+  // Inside an intimate scene A follows the scene's stages, so the body block
+  // is not asked.
+  const body = !evidenceOnly && !localIntimacy && (decodeNoul(answers.body_any).status === 'yes' || Number(state.arousal?.value || 0) > 0.05 || Number(localTouch || 0) > 0);
   return { dimensions: [...new Set(dimensions)], replySelf, neglect, body, needed: dimensions.length > 0 || neglect || body };
 }
 
@@ -211,7 +229,7 @@ function recoverDimension(current, dimension, answers) {
   return clamp(baseline + (current - baseline) * Math.exp(-Math.log(2) / halfLife * speed));
 }
 
-function integrateDimension(current, dimension, obs, answers, stage2) {
+function integrateDimension(current, dimension, obs, answers, stage2, intimacy = null) {
   const [baseline, sensitivity, stepCap, halfLife] = EMOTION_CONFIG[dimension];
   const gap = obs.value - current;
   const strong = obs.mode === 'strong' && dimension !== 'trust';
@@ -225,7 +243,15 @@ function integrateDimension(current, dimension, obs, answers, stage2) {
   // A rise in aversion whose own source Jev labels as playful ("这次我不上钩",
   // teasing, being firm to look after her) is banter, not wanting to pull away.
   const playfulAversion = dimension === 'aversion' && gap > 0 && probabilityOf(stage2[`${dimension}_label`], 'playful') >= 0.5;
-  const accepted = obs.source === 'reply_behavior' ? true : (!playfulAversion && acceptedMetadata(stage2, dimension));
+  // The same for anger ("你以为我会忘。我不会忘"), but only when the turn's
+  // texture is banter too; in real use most accepted anger rises were
+  // teasing. Aggrieved or really angry textures still count.
+  const texture = answers.texture?.probabilities || {};
+  const playfulAnger = dimension === 'anger' && gap > 0 && !intimacy
+    && probabilityOf(stage2[`${dimension}_label`], 'playful') >= 0.35
+    && PLAYFUL_TEXTURES.reduce((sum, key) => sum + Math.max(0, Number(texture[key] || 0)), 0) >= 0.5
+    && Math.max(0, Number(texture.real_angry || 0)) < 0.3;
+  const accepted = obs.source === 'reply_behavior' ? true : (!playfulAversion && !playfulAnger && acceptedMetadata(stage2, dimension));
   return { observation: obs.value, gap, raw, effective, before: current, afterEvent, final, baseline, source: obs.source, ...(obs.ending ? { ending: obs.ending } : {}), accepted };
 }
 
@@ -291,7 +317,7 @@ function arousalStep(arousal, body, values, careUrgency, jealousyTrace, scoredAt
   // cap from 0.15 to 0.6 on nearly every turn. Only a real temptation does.
   const temptedRaw = val('tempted');
   const tempted = temptedRaw >= TEMPTED_MIN ? temptedRaw : 0;
-  const F = 0.30 * values.warmth + 0.25 * values.trust + 0.25 * values.vulnerability + 0.20 * values.energy - 0.40 * values.overwhelm - 0.25 * values.resistance;
+  const F = 0.30 * values.warmth + 0.25 * values.trust + 0.25 * values.vulnerability + 0.20 * ENERGY_BASELINE - 0.40 * values.overwhelm - 0.25 * values.resistance;
   const smooth = t => { const x = clamp(t / 0.6); return x * x * (3 - 2 * x); };
   const sens = 1 + 3 * smooth(arousal.value);
   const gain = Math.min(2, 1 + 0.5 * Math.max(0, values.longing - EMOTION_CONFIG.longing[0]) + 0.45 * jealousyTrace + 0.35 * careUrgency + 0.25 * Math.max(0, F));
@@ -311,11 +337,44 @@ function arousalStep(arousal, body, values, careUrgency, jealousyTrace, scoredAt
   };
 }
 
+// Inside an intimate scene A is driven by the scene's stages, not by Jev's
+// body block. Under the per-turn half-life A used to sit near 0.55 for a whole
+// flow and even dipped mid-sex. Each flow turn moves A toward the stage target
+// (0.62 -> 0.90 across the stages before climax, 0.95 at climax) without
+// decaying; ordinary decay resumes after the scene ends. A stop set before the
+// scene started is stale: the user entered this scene after it.
+export function flowArousalTarget(intimacy) {
+  const climax = Math.max(0, Number(intimacy?.climaxIndex ?? (Number(intimacy?.stageCount || 1) - 1)));
+  const index = Math.max(0, Number(intimacy?.stageIndex || 0));
+  if (index >= climax) return 0.95;
+  return 0.62 + 0.28 * (index + 1) / (climax + 1);
+}
+function flowArousalStep(arousal, intimacy) {
+  const before = Number(arousal.value || 0);
+  const staleStop = Boolean(arousal.stopActive) && Number(intimacy.startedAt || 0) > Number(arousal.stopSetAt || 0);
+  const stopActive = Boolean(arousal.stopActive) && !staleStop;
+  const target = flowArousalTarget(intimacy);
+  const final = stopActive ? before : clamp(before + Math.max(0, 0.45 * (target - before)));
+  const trace = Math.max(Number(arousal.trace || 0), final) * Math.exp(-Math.log(2) / 24);
+  return {
+    state: { ...arousal, value: round(final), trace: round(trace), tick: Number(arousal.tick || 0) + 1, stopActive, stopSetAt: stopActive ? Number(arousal.stopSetAt || 0) : 0 },
+    details: { before, flow: true, target, stageIndex: intimacy.stageIndex, stageCount: intimacy.stageCount, touch: 0, tempted: 0, effective: final - before, afterEvent: final, final, trace, stopActive, stopReleased: staleStop },
+  };
+}
+
+function validIntimacySignal(value) {
+  if (!value || typeof value !== 'object') return null;
+  const stageCount = Math.floor(Number(value.stageCount));
+  const stageIndex = Math.floor(Number(value.stageIndex));
+  if (!(stageCount >= 1) || !(stageIndex >= 0) || stageIndex >= stageCount) return null;
+  return { ...value, stageCount, stageIndex };
+}
+
 const INJECTION_HIDDEN = new Set(['resistance']);
 const INJECTION_LABELS = Object.freeze({
   joy: '开心', sadness: '悲伤', anger: '愤怒', anxiety: '焦虑', aversion: '反感', warmth: '温暖',
   trust: '信任', longing: '思念', hurt: '受伤', guilt: '愧疚', curiosity: '好奇', pride: '自豪',
-  vulnerability: '脆弱', energy: '精力', overwhelm: '不堪重负', intimate_arousal: '身体亲近感',
+  vulnerability: '脆弱', overwhelm: '不堪重负', intimate_arousal: '身体亲近感',
 });
 const SOURCE_REASONS = Object.freeze({
   jealousy: '吃醋', guilt: '想补偿', care: '心疼', longing: '想念', reassured: '被安抚',
@@ -334,7 +393,7 @@ function injectionReason(stage2, key) {
   return parts.join('，').slice(0, 20);
 }
 
-function createInjectionProjection({ state, changes, answers, stage2, arousal }) {
+function createInjectionProjection({ state, changes, answers, stage2, arousal, intimacy = null }) {
   const items = Object.entries(changes)
     .filter(([key, detail]) => !INJECTION_HIDDEN.has(key) && detail.accepted && Math.abs(detail.final - detail.before) >= 0.015)
     .map(([key, detail]) => ({
@@ -342,7 +401,7 @@ function createInjectionProjection({ state, changes, answers, stage2, arousal })
       label: INJECTION_LABELS[key] || key,
       direction: detail.final >= detail.before ? 'up' : 'down',
       degree: degree(detail.final - detail.before),
-      reason: injectionReason(stage2, key),
+      reason: intimacy && FLOW_HEAT_DIMENSIONS.has(key) && detail.final > detail.before ? '亲密中' : injectionReason(stage2, key),
       weight: Math.abs(detail.final - detail.before) * (RELATION_WEIGHTS[key] || 1),
     }));
   if (arousal && Math.abs(arousal.final - arousal.before) >= 0.015) {
@@ -362,17 +421,20 @@ function createInjectionProjection({ state, changes, answers, stage2, arousal })
   };
 }
 
-function advanceHintState(state, input, answers, arousalDetails) {
+function advanceHintState(state, input, answers, arousalDetails, intimacy = null) {
   const hints = state.hintState;
   const version = Number(state.stateVersion || 0);
   if (Number(state.arousal?.value || 0) < 0.35) { hints.arousalArmed = true; delete hints.pending.arousal; }
+  // A scene-driven A must not queue the arousal hint for right after the
+  // scene; the hint re-arms once A falls below 0.35 as before.
+  if (intimacy) { delete hints.pending.arousal; hints.arousalArmed = false; }
   if (Number(state.careUrgency || 0) < 0.50) { hints.careArmed = true; delete hints.pending.care; }
   if (Number(state.values?.resistance || 0) < 0.20) { hints.avoidanceArmed = true; delete hints.pending.avoidance; }
 
   const boundary = decodeNoul(answers?.gate_Boundary);
   const stopped = state.arousal?.stopActive || decodeNoul(input.stage2Answers?.stop_signal).status === 'yes';
   if (stopped || boundary.status === 'yes') delete hints.pending.arousal;
-  if (hints.arousalArmed && !stopped && boundary.status === 'no' && Number(arousalDetails?.afterEvent || 0) >= 0.60) {
+  if (!intimacy && hints.arousalArmed && !stopped && boundary.status === 'no' && Number(arousalDetails?.afterEvent || 0) >= 0.60) {
     hints.pending.arousal = { id: `arousal:${input.messageId}:${version}`, stateVersion: version };
     hints.arousalArmed = false;
   }
@@ -388,7 +450,7 @@ function advanceHintState(state, input, answers, arousalDetails) {
   if (decodeNoul(answers?.gate_Resolved).status === 'yes') state.conflictContext = false;
   if (['Unresolved', 'Threat', 'Boundary'].some(key => decodeNoul(answers?.[`gate_${key}`]).status === 'yes')) state.conflictContext = true;
   const conflict = state.conflictContext === true;
-  const negative = ['hurt', 'sadness', 'anger', 'anxiety'].some(key => Number(state.values?.[key] || 0) >= 0.25);
+  const negative = ['hurt', 'sadness', 'anger', 'anxiety'].some(key => Number(state.values?.[key] || 0) - Number(state.flowHeat?.[key] || 0) >= 0.25);
   if (hints.avoidanceArmed && conflict && negative && Number(state.values?.resistance || 0) >= 0.35
     && version - Number(hints.avoidanceLastTriggeredVersion || -1000) >= 6) {
     hints.pending.avoidance = { id: `avoidance:${input.messageId}:${version}`, stateVersion: version };
@@ -469,9 +531,24 @@ export function applyEmotionTurn(previous, input) {
   if (NEGLECT_EVIDENCE_ONLY_TURN_KINDS.has(input.turnKind)) {
     return applyNeglectEvidenceOnlyTurn(state, before, input, answers, stage2);
   }
-  const plan = planEmotionFollowups(state, answers, { questionSet: input.questionSet, turnKind: input.turnKind, localTouch: input.localSignals?.touch?.value });
+  const intimacy = validIntimacySignal(input.localSignals?.intimacy);
+  const plan = planEmotionFollowups(state, answers, { questionSet: input.questionSet, turnKind: input.turnKind, localTouch: input.localSignals?.touch?.value, localIntimacy: intimacy });
   const changes = {};
   let careUrgency = 0;
+  // The first ordinary turn after a scene settles most of the anger and
+  // overwhelm the flow added, before the usual recovery runs.
+  let flowSettled = null;
+  if (!intimacy && Object.keys(state.flowHeat || {}).length) {
+    flowSettled = {};
+    for (const [key, heat] of Object.entries(state.flowHeat)) {
+      if (!FLOW_HEAT_DIMENSIONS.has(key)) continue;
+      const baseline = EMOTION_CONFIG[key][0];
+      const drop = Math.min(Math.max(0, Number(state.values[key]) - baseline), FLOW_HEAT_SETTLE * Number(heat || 0));
+      state.values[key] = round(Number(state.values[key]) - drop);
+      flowSettled[key] = round(drop);
+    }
+    state.flowHeat = {};
+  }
   for (const [key] of EMOTION_DIMENSIONS) {
     let obs = expectedObservation(answers[`level_${key}`], key, { questionSet: input.questionSet });
     if (plan.replySelf.includes(key)) {
@@ -492,10 +569,13 @@ export function applyEmotionTurn(previous, input) {
     const current = Number(state.values[key]);
     const behaviourChange = obs.source === 'reply_behavior' && Math.abs(obs.value - current) >= EMOTION_FOLLOWUP_GAP;
     if (obs.status === 'value' && (plan.dimensions.includes(key) || behaviourChange)) {
-      const detail = integrateDimension(current, key, obs, answers, stage2);
+      const detail = integrateDimension(current, key, obs, answers, stage2, intimacy);
       if (detail.accepted) state.values[key] = round(detail.final);
       else state.values[key] = round(recoverDimension(current, key, answers));
-      changes[key] = { ...detail, final: state.values[key] };
+      changes[key] = { ...detail, final: state.values[key], ...(intimacy && FLOW_HEAT_DIMENSIONS.has(key) ? { flow: true } : {}) };
+      if (intimacy && FLOW_HEAT_DIMENSIONS.has(key) && detail.accepted && state.values[key] > current) {
+        state.flowHeat = { ...(state.flowHeat || {}), [key]: round(clamp(Number(state.flowHeat?.[key] || 0) + state.values[key] - current)) };
+      }
     } else {
       state.values[key] = round(recoverDimension(current, key, answers));
     }
@@ -524,7 +604,9 @@ export function applyEmotionTurn(previous, input) {
     ...state.values,
     longing: effectiveLonging(state.values.longing, state.missing?.value),
   };
-  const arousal = arousalStep(state.arousal, body, arousalValues, state.careUrgency, state.jealousyTrace, input.scoredAt);
+  const arousal = intimacy
+    ? flowArousalStep(state.arousal, intimacy)
+    : arousalStep(state.arousal, body, arousalValues, state.careUrgency, state.jealousyTrace, input.scoredAt);
   state.arousal = arousal.state;
   state.stateVersion = Number(state.stateVersion || 0) + 1;
   state.updatedAt = Number(input.scoredAt || Date.now());
@@ -533,8 +615,8 @@ export function applyEmotionTurn(previous, input) {
     messageTs: Number(input.messageTs || 0),
     stateVersion: state.stateVersion,
   };
-  advanceHintState(state, input, answers, arousal.details);
-  state.latestInjection = createInjectionProjection({ state, changes, answers, stage2, arousal: arousal.details });
+  advanceHintState(state, input, answers, arousal.details, intimacy);
+  state.latestInjection = createInjectionProjection({ state, changes, answers, stage2, arousal: arousal.details, intimacy });
   const affectView = createAffectView({ before, state, changes, answers, stage2, arousal: arousal.details });
   state.processed[`${input.messageId}:${input.contentHash}`] = { at: state.updatedAt, questionSet: input.questionSet, affectView };
   return {
@@ -553,6 +635,8 @@ export function applyEmotionTurn(previous, input) {
       careUrgency: state.careUrgency,
       neglectTrace: state.neglectTrace,
       jealousyTrace: state.jealousyTrace,
+      ...(intimacy ? { intimacyFlow: { stageIndex: intimacy.stageIndex, stageCount: intimacy.stageCount }, flowHeat: { ...state.flowHeat } } : {}),
+      ...(flowSettled ? { flowSettled } : {}),
     },
     affectView,
   };

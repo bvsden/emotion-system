@@ -51,7 +51,10 @@ export async function callJevDecisions({ apiKey, material, questions, model = EM
  * @param {object} args.state      current state from createEmotionState() or the last result
  * @param {object} args.turn       { conversationId, messageId, messageTs, thinking, reply,
  *                                   userMessage, previousUserMessage, previousReply,
- *                                   turnKind, waitedMinutes }
+ *                                   turnKind, waitedMinutes, intimacy? }
+ *                                 intimacy (optional): if your app runs a staged intimate scene,
+ *                                   pass { stageIndex, stageCount, climaxIndex?, startedAt? } for
+ *                                   replies written inside it; arousal then follows the stages.
  * @param {string} [args.apiKey]   OpenRouter key (not needed when `ask` is given)
  * @param {Function} [args.ask]    optional replacement for the Jev call: (material, questions) => { answers, usage }
  * @returns {{ state, record, affectView }} save `record` (no chat text inside) and `state`.
@@ -60,11 +63,15 @@ export async function scoreTurn({ state, turn, apiKey, ask }) {
   const material = buildEmotionMaterial(turn);
   const touch = readBracketTouch({ reply: material.reply || '', userMessage: material.user_message || '' });
   const localSignals = { touch, ...localEmotionAnswers({ material, touch }) };
+  if (turn.intimacy && typeof turn.intimacy === 'object') {
+    const { stageIndex, stageCount, climaxIndex, startedAt } = turn.intimacy;
+    localSignals.intimacy = { stageIndex, stageCount, ...(climaxIndex != null ? { climaxIndex } : {}), startedAt: Number(startedAt || 0) };
+  }
   const call = ask || ((m, questions) => callJevDecisions({ apiKey, material: m, questions }));
 
   const stage1 = await call(material, buildStage1Questions({ turnKind: turn.turnKind || 'normal_reply', thinkingEmpty: !material.thinking.length }));
   const followupPlan = planEmotionFollowups(state, { ...stage1.answers, ...localSignals.answers }, {
-    questionSet: EMOTION_QUESTION_SET_VERSION, turnKind: turn.turnKind || 'normal_reply', localTouch: touch.value,
+    questionSet: EMOTION_QUESTION_SET_VERSION, turnKind: turn.turnKind || 'normal_reply', localTouch: touch.value, localIntimacy: localSignals.intimacy || null,
   });
   const stage2 = followupPlan.needed ? await call(material, buildStage2Questions(followupPlan, material)) : null;
 

@@ -85,7 +85,7 @@ Jev 是 TypeSafe AI 在 2026 年 9 月发布的**决策模型**，可以通过 O
 - 角色要开启**可见思考**，并在思考里用第一人称写下感受
 
 ```bash
-npm test               # 17 项测试，全部用虚构的例子
+npm test               # 20 项测试，全部用虚构的例子
 npm run example        # 离线示例（用模拟答案）
 OPENROUTER_API_KEY=sk-... npm run example   # 真实调用 Jev
 ```
